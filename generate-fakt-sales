@@ -1,0 +1,581 @@
+import pandas as pd
+import openpyxl
+from openpyxl.styles import Font, Alignment, Border, Side
+import tkinter as tk
+from tkinter import ttk, messagebox, simpledialog
+import os
+from datetime import datetime
+from tkinter import font as tkfont
+
+# Define font variables at the top
+FONT_LARGE = ("Arial", 18)
+FONT_DIALOG = ("Arial", 26)
+FONT_BUTTON = ("Arial", 16)
+
+class InvoiceGUI:
+    def __init__(self, root, product_df, customer_df, invoice_no):
+        self.root = root
+        self.product_df = product_df
+        self.customer_df = customer_df
+        self.items = []
+        self.invoice_no = invoice_no
+
+        self.root.title("Invoice Generator")
+        self.root.state("zoomed")
+
+        # Set default font for all tk widgets
+        default_font = tkfont.nametofont("TkDefaultFont")
+        default_font.configure(size=14)  # Change 14 to your preferred size
+
+        # Set font for ttk widgets
+        style = ttk.Style()
+        style.configure("TLabel", font=FONT_LARGE)
+        style.configure("TButton", font=FONT_LARGE)
+        style.configure("TCombobox", font=FONT_LARGE, padding=6)
+        style.map("TCombobox", fieldbackground=[('readonly', 'white')])
+        style.configure("TEntry", font=FONT_LARGE)
+
+        # Add extra whitespace at the top using an empty label
+        tk.Label(root, text="", font=("Arial", 8)).grid(row=0, column=0, columnspan=1, pady=(0, 0))
+
+        # Dropdown Pelanggan
+        tk.Label(root, text="Cari Pelanggan:", font=FONT_LARGE).grid(row=1, column=0, padx=5, pady=4)
+        self.customer_var = tk.StringVar()
+        self.customer_cb = ttk.Combobox(root, textvariable=self.customer_var, width=38, font=FONT_LARGE)
+        self.customer_items = [f"{row.iloc[0]} - {row.iloc[1]}" for _, row in customer_df.iterrows()]
+        self.customer_cb['values'] = self.customer_items
+        self.customer_cb.grid(row=1, column=1, padx=5, pady=4)
+        self.customer_cb.bind('<KeyRelease>', self.filter_customer)
+        self.customer_cb.bind('<<ComboboxSelected>>', self.update_customer_name)
+
+        # Dropdown Produk
+        tk.Label(root, text="Cari Produk:", font=FONT_LARGE).grid(row=2, column=0, padx=5, pady=4)
+        self.product_var = tk.StringVar()
+        self.product_cb = ttk.Combobox(root, textvariable=self.product_var, width=38, font=FONT_LARGE)
+        self.product_cb['values'] = [f"{row.iloc[0]} - {row.iloc[1]}" for _, row in product_df.iterrows()]
+        self.product_cb.grid(row=2, column=1, padx=5, pady=4)
+        self.product_cb.bind('<KeyRelease>', self.filter_product)
+        self.product_cb.bind('<<ComboboxSelected>>', self.update_product_name)
+
+        # Make dropdown list choices larger (ttk style)
+        style = ttk.Style()
+        style.configure("TCombobox", font=("Arial", 16))
+        style.map("TCombobox", fieldbackground=[('readonly', 'white')])
+        style.configure("TCombobox", padding=4.5)
+
+        # Make dropdown list items larger (for Windows only)
+        try:
+            self.root.option_add('*TCombobox*Listbox.font', ('Arial', 16))
+        except Exception:
+            pass
+
+        # Input Qty dan Harga
+        tk.Label(root, text="Qty(B) U/Bsr:", font=FONT_LARGE).grid(row=3, column=0, padx=5, pady=7)
+        self.qty_entry = tk.Entry(root, font=FONT_LARGE, width=40)
+        self.qty_entry.grid(row=3, column=1, padx=5, pady=7)
+
+        tk.Label(root, text="Harga per U/Kcl:", font=FONT_LARGE).grid(row=4, column=0, padx=5, pady=4)
+        self.price_entry = tk.Entry(root, font=FONT_LARGE, width=40)
+        self.price_entry.grid(row=4, column=1, padx=5, pady=4)
+
+        # Tombol Tambah Produk
+        self.add_btn = tk.Button(root, text="Tambah Barang", command=self.add_product, font=FONT_LARGE)
+        self.add_btn.grid(row=5, column=0, columnspan=2, pady=15)
+
+        # List Item
+        self.listbox = tk.Listbox(root, width=110, height=11, font=FONT_LARGE)
+        self.listbox.grid(row=6, column=0, columnspan=2, padx=5, pady=4)
+
+        # Label Subtotal
+        self.subtotal_var = tk.StringVar(value="Subtotal: 0.00")
+        self.subtotal_label = tk.Label(root, textvariable=self.subtotal_var, font=FONT_LARGE, fg="blue")
+        self.subtotal_label.grid(row=8, column=0, columnspan=2, pady=1)
+
+        # Tombol Hapus Produk
+        self.delete_btn = tk.Button(root, text="Hapus Barang", command=self.delete_product, font=FONT_LARGE)
+        self.delete_btn.grid(row=7, column=0, pady=15)
+
+        # Tombol Generate
+        self.gen_btn = tk.Button(root, text="Buat Faktur", command=self.generate_invoice, font=FONT_LARGE)
+        self.gen_btn.grid(row=7, column=1, pady=15)
+
+        self.update_subtotal()
+
+    def filter_customer(self, event):
+        query = self.customer_var.get().lower()
+        filtered = [item for item in self.customer_items if query in item.lower()]
+        self.customer_cb['values'] = filtered
+
+    def filter_product(self, event):
+        query = self.product_var.get().lower()
+        filtered = [
+            f"{row.iloc[0]} - {row.iloc[1]}" 
+            for _, row in self.product_df.iterrows() 
+            if query in str(row.iloc[0]).lower() or query in str(row.iloc[1]).lower()
+        ]
+        self.product_cb['values'] = filtered
+
+    def update_customer_name(self, event=None):
+        code = self.customer_var.get().split(' - ')[0].strip()
+        for _, row in self.customer_df.iterrows():
+         if str(row.iloc[0]) == code:
+            # Get columns B, E, F (indices 1, 4, 5)
+            nama = str(row.iloc[1])
+            alamat1 = str(row.iloc[4])
+            alamat2 = str(row.iloc[5])
+            self.nama = nama
+            self.alamat1 = alamat1
+            self.alamat2 = alamat2
+            break
+
+    def update_product_name(self, event=None):
+        code = self.product_var.get().split(' - ')[0].strip()
+        for _, row in self.product_df.iterrows():
+            if str(row.iloc[0]) == code:
+                self.product_name = row.iloc[1]
+                self.qkcl = row.iloc[2]
+                return
+        self.product_name = ""
+        self.qkcl = 0
+
+    def add_product(self):
+        try:
+            qtyb = int(self.qty_entry.get())
+            harga = float(self.price_entry.get())
+            if qtyb <= 0 or harga <= 0:
+                raise ValueError
+        except ValueError:
+            messagebox.showerror("Error", "Qty/Harga harus angka positif!")
+            return
+
+        product_code = self.product_var.get().split(' - ')[0].strip()
+        qtyk = qtyb * self.qkcl
+        subtotal = qtyk * harga
+
+        self.items.append({
+            "nama": self.product_name,
+            "qty_b": qtyb,
+            "u_bsr": self.qkcl,
+            "qty_k": qtyk,
+            "harga": harga,
+            "jumlah": subtotal
+        })
+
+        self.listbox.insert(
+            tk.END,
+            f"{product_code} | {self.product_name} | Qty(B): {qtyb} | Qty(K): {qtyk} | Harga: {harga:,.2f} | Subtotal: {subtotal:,.2f}"
+        )
+
+        self.product_var.set("")
+        self.qty_entry.delete(0, tk.END)
+        self.price_entry.delete(0, tk.END)
+        self.update_subtotal()
+
+    def delete_product(self):
+        selected = self.listbox.curselection()
+        if not selected:
+            messagebox.showwarning("Peringatan", "Pilih barang yang ingin dihapus!")
+            return
+        idx = selected[0]
+        del self.items[idx]
+        self.listbox.delete(idx)
+        self.update_subtotal()
+
+    def generate_invoice(self):
+        writer = InvoiceExcelWriter(self.collect_invoice_data())
+        writer.save_invoice()
+        # Destroy current window and show InvoiceNumberDialog for new invoice
+        self.root.destroy()
+        temp_root = tk.Tk()
+        temp_root.withdraw()
+        dialog = InvoiceNumberDialog(temp_root)
+        new_invoice_no = dialog.result
+        temp_root.destroy()
+        if new_invoice_no:
+            # Relaunch main with new invoice number
+            main()
+
+    def collect_invoice_data(self):
+        # Collect data for invoice
+        return {
+            "items": self.items,
+            "invoice_no": self.invoice_no,
+            "nama": self.nama,
+            "alamat1": self.alamat1,
+            "alamat2": self.alamat2,
+            "sales_name": getattr(self, "sales_name", "")
+        }
+
+    def update_subtotal(self):
+        total = sum(item["jumlah"] for item in self.items)
+        self.subtotal_var.set(f"Subtotal: {total:,.2f}")
+
+class InvoiceExcelWriter:
+    def __init__(self, invoice_data):
+        self.invoice_data = invoice_data
+
+    def save_invoice(self):
+        # Buat file Excel
+        wb = openpyxl.Workbook()
+        ws = wb.active
+
+        # Style
+        bold = Font(bold=True)
+        center = Alignment(horizontal="center", vertical="center")
+        thin_border = Border(bottom=Side(style='thin'))
+
+        # Header
+        ws["A1"] = "CPS"
+        ws["A3"] = "No. Faktur: " + str(self.invoice_data["invoice_no"])
+        ws["A4"] = "Keterangan:"
+
+        ws["E1"] = "Jakarta, " + datetime.now().strftime("%d/%m/%Y")
+        ws["E2"] = str(self.invoice_data["nama"])
+        ws["E3"] = str(self.invoice_data["alamat1"])
+        ws["E4"] = str(self.invoice_data["alamat2"])
+
+        # Tabel
+        headers = ["No", "Nama Barang", "Qty(B) U/Bsr", "Qty(K) U/Kcl", "Harga", "Jumlah"]
+        ws.append([])
+        ws.append(headers)
+        
+        # Format header
+        for col in "ABCDEF":
+            cells = (ws[f"{col}5"], ws[f"{col}6"])
+            for cell in cells:
+                cell.font = bold
+                cell.alignment = center
+                cell.border = thin_border
+
+        for col in "ABCDEF":
+            ws[f"{col}16"].border = thin_border
+
+        # Isi data
+        start_row = 7
+        max_products = 10  # Always 10 product rows
+
+        for i in range(max_products):
+            row = start_row + i
+            if i < len(self.invoice_data["items"]):
+                item = self.invoice_data["items"][i]
+                ws[f"A{row}"] = i + 1
+                ws[f"B{row}"] = item["nama"]
+                ws[f"C{row}"] = item["qty_b"]
+                ws[f"D{row}"] = item["qty_k"]
+                ws[f"E{row}"] = item["harga"]
+                ws[f"F{row}"] = item["jumlah"]
+            else:
+                # Fill empty rows if there are fewer than 10 products
+                ws[f"A{row}"] = ""
+                ws[f"B{row}"] = ""
+                ws[f"C{row}"] = ""
+                ws[f"D{row}"] = ""
+                ws[f"E{row}"] = ""
+                ws[f"F{row}"] = ""
+
+        for i in range(max_products):
+            row = start_row + i
+            ws[f"E{row}"].number_format = '#,##0'
+            ws[f"F{row}"].number_format = '#,##0'
+
+        # Total
+        ws["E17"] = "Total :"
+        ws["E17"].font = bold
+        ws["F17"] = sum(item["jumlah"] for item in self.invoice_data["items"])
+        ws["F17"].font = bold
+        ws["F17"].number_format = '#,##0'
+        # Footer
+        ws["A19"] = "Ket : Harga di atas sudah termasuk PPN"
+        ws["A20"] = "      Barang-barang di atas telah diperiksa & diterima dgn baik & cukup"
+
+        # Tanda tangan
+        ws["b22"] = "      Diterima Oleh"
+        ws["C22"] = "Dikirim Oleh"
+        ws["f22"] = "Hormat Kami,"
+        ws["b25"] = "(…............................)"
+        ws["C25"] = "(…............................)"
+        ws["F25"] = "(…............................)"
+        ws["C26"] = "SUPIR"
+        ws["F26"] = self.invoice_data.get("sales_name", "")
+
+        # Merge and center signature cells
+        ws.merge_cells("C22:D22")
+        ws.merge_cells("C25:D25")
+        ws.merge_cells("C26:D26")
+        ws["F22"].alignment = Alignment(horizontal="center", vertical="center")
+        ws["C22"].alignment = Alignment(horizontal="center", vertical="center")
+        ws["C25"].alignment = Alignment(horizontal="center", vertical="center")
+        ws["C26"].alignment = Alignment(horizontal="center", vertical="center")
+        ws["F26"].alignment = Alignment(horizontal="center", vertical="center")
+
+        # Ukuran kolom
+        column_widths = [2.8, 38.5, 12, 12, 12, 18]
+        for i, width in enumerate(column_widths, 1):
+            ws.column_dimensions[openpyxl.utils.get_column_letter(i)].width = width
+
+        # Set font size 12 for all used cells
+        for row in ws.iter_rows(min_row=1, max_row=ws.max_row, min_col=1, max_col=ws.max_column):
+            for cell in row:
+                cell.font = Font(size=12)
+
+        # Set print margins (in inches)
+        ws.page_margins.left = 0
+        ws.page_margins.right = 0
+        ws.page_margins.top = 0
+        ws.page_margins.bottom = 0
+        ws.page_margins.header = 0.5
+        ws.page_margins.footer = 0.5
+
+
+        # Set paper size to Legal (Legal = 5 in openpyxl)  # Custom paper size
+        # Set paper size to Legal (8.5 x 14 in)
+        ws.page_setup.paperHeight = '139.7in'
+        ws.page_setup.paperWidth = '215.9in'
+
+        # Fit all columns to 1 page wide when printing
+        ws.page_setup.orientation = "portrait"  # Optional: landscape orientation
+
+        # Simpan
+        filename = f"Faktur_{self.invoice_data['invoice_no']}.xlsx"
+        if os.path.exists(filename):
+            messagebox.showerror("Error", f"File {filename} sudah ada!")
+            return
+
+        try:
+            wb.save(filename)
+        except Exception as e:
+            messagebox.showerror("Error", f"Gagal menyimpan file: {e}")
+            return
+
+        messagebox.showinfo("Sukses", f"Faktur disimpan sebagai {filename}")
+        try:
+            baris = save_to_coretax(
+                self.invoice_data["invoice_no"],
+                self.invoice_data["nama"],
+                self.invoice_data["alamat1"]
+            )
+            save_to_coretax_detail(baris, self.invoice_data["items"])
+            messagebox.showinfo("Sukses", "Data berhasil disimpan ke Coretax!")
+        except Exception as e:
+            messagebox.showerror("Error", f"Gagal menyimpan ke Coretax: {e}")
+
+        save_to_history_faktur(self.invoice_data)
+        #save_to_coretax_detail(baris, self.invoice_data["items"])
+        # self.root.destroy()  # REMOVE or COMMENT OUT this line
+
+class InvoiceNumberDialog(simpledialog.Dialog):
+    SALES_LIST = ["Junaedy", "Afut", "Eddie", "Anthony", "Aldi", "Miswadi", "Wahyudi"]
+    def body(self, master):
+        self.title("Invoice Number")
+        label = tk.Label(master, text="Masukkan Nomor Faktur:", font=FONT_DIALOG)
+        label.grid(row=0, column=0, padx=30, pady=20)
+        self.entry = tk.Entry(master, width=50, font=FONT_DIALOG)
+        self.entry.insert(0, "S")
+        self.entry.grid(row=1, column=0, padx=30, pady=20)
+        label2 = tk.Label(master, text="Pilih Nama Sales:", font=FONT_DIALOG)
+        label2.grid(row=2, column=0, padx=30, pady=10)
+        self.sales_var = tk.StringVar()
+        self.sales_cb = ttk.Combobox(master, textvariable=self.sales_var, values=self.SALES_LIST, font=FONT_DIALOG, width=47, state="readonly")
+        self.sales_cb.grid(row=3, column=0, padx=30, pady=10)
+        self.sales_cb.current(0)  # Default to first sales name
+        return self.entry
+
+    def buttonbox(self):
+        box = tk.Frame(self)
+        w = tk.Button(
+            box, text="OK", width=12, height=2, font=FONT_BUTTON, command=self.ok, default=tk.ACTIVE
+        )
+        w.pack(side=tk.LEFT, padx=20, pady=20)
+        w = tk.Button(
+            box, text="Cancel", width=12, height=2, font=FONT_BUTTON, command=self.cancel
+        )
+        w.pack(side=tk.LEFT, padx=20, pady=20)
+        self.bind("<Return>", self.ok)
+        self.bind("<Escape>", self.cancel)
+        box.pack()
+
+    def apply(self):
+        self.result = self.entry.get()
+        self.sales_name = self.sales_var.get()
+
+def main():
+    # Baca data Excel
+    try:
+        product_df = pd.read_excel("Excel Macro Test.xlsx", sheet_name="Product")
+        customer_df = pd.read_excel("Excel Macro Test.xlsx", sheet_name="Customer")
+        if product_df.shape[1] < 3 or customer_df.shape[1] < 10:
+            messagebox.showerror("Error", "Struktur kolom Excel tidak sesuai!")
+            return
+    except Exception as e:
+        messagebox.showerror("Error", f"Gagal baca file Excel: {str(e)}")
+        return
+
+    temp_root = tk.Tk()
+    temp_root.withdraw()
+    dialog = InvoiceNumberDialog(temp_root)
+    invoice_no = dialog.result
+    sales_name = getattr(dialog, "sales_name", "")  # Get sales name
+    temp_root.destroy()
+
+    if not invoice_no:
+        return
+
+    # Check if file already exists
+    filename = f"Faktur_{invoice_no}.xlsx"
+    while os.path.exists(filename):
+        tk.messagebox.showerror("Error", f"File {filename} sudah ada! Silakan masukkan nomor faktur lain.")
+        temp_root = tk.Tk()
+        temp_root.withdraw()
+        dialog = InvoiceNumberDialog(temp_root)
+        invoice_no = dialog.result
+        sales_name = getattr(dialog, "sales_name", "")  # Get sales name again
+        temp_root.destroy()
+        if not invoice_no:
+            return
+        filename = f"Faktur_{invoice_no}.xlsx"
+
+    root = tk.Tk()
+    app = InvoiceGUI(root, product_df, customer_df, invoice_no)
+    app.sales_name = sales_name  # Pass sales name to the app
+    root.mainloop()
+
+import openpyxl
+from datetime import datetime
+
+def save_to_coretax(invoice_no, nama, alamat1):
+    filename = "format-coretax.xlsx"
+    wb = openpyxl.load_workbook(filename)
+    ws = wb["Faktur"]  # Change if your sheet name is different
+
+    # Find END row
+    end_row = None
+    for row in ws.iter_rows(min_row=1, max_row=ws.max_row, min_col=1, max_col=1):
+        if row[0].value == "END":
+            end_row = row[0].row
+            break
+    if end_row is None:
+        raise Exception("END row not found in Faktur sheet!")
+
+    # Increment Baris
+    prev_baris = ws[end_row-1][0].value
+    if isinstance(prev_baris, int):
+        baris = prev_baris + 1
+    else:
+        baris = 1
+
+    # Date format (adjust for your OS if needed)
+    try:
+        tanggal_faktur = datetime.now().strftime("%-m/%-d/%Y")  # Linux/Mac
+    except:
+        tanggal_faktur = datetime.now().strftime("%#m/%#d/%Y")  # Windows
+
+    # Prepare new row (adjust columns as needed for your template)
+    new_row = [
+        baris,
+        tanggal_faktur,
+        "Normal",
+        "04",
+        "",
+        "-",
+        invoice_no,         # invoice_no from your GUI
+        "",
+        "0833395007036000000000",
+        "0000000000000000",
+        "Other ID",
+        "IDN",
+        "-",
+        nama,               # customer name from your GUI
+        alamat1,            # address1 from your GUI
+        "fakturkeluaran@gmail.com",
+        "0000000000000000000000"
+    ]
+
+    ws.insert_rows(end_row)
+    for col, value in enumerate(new_row, 1):
+        ws.cell(row=end_row, column=col, value=value)
+
+    wb.save(filename)
+    return baris
+
+def save_to_coretax_detail(baris, items):
+    filename = "format-coretax.xlsx"
+    wb = openpyxl.load_workbook(filename)
+    ws = wb["DetailFaktur"]  # Make sure this matches your sheet name
+
+    # Find END row
+    end_row = None
+    for row in ws.iter_rows(min_row=1, max_row=ws.max_row, min_col=1, max_col=1):
+        if row[0].value == "END":
+            end_row = row[0].row
+            break   
+    if end_row is None:
+        raise Exception("END row not found in FakturDetail sheet!")
+
+    for item in items:
+        barang_jasa = "A"
+        kode_barang_jasa = "000000"
+        nama_barang_jasa = item["nama"]  # from input
+        nama_satuan_ukur = "UM.0022"
+        harga_satuan = round(item["harga"] / 1.11, 2)
+        jumlah_barang_jasa = item["qty_k"]  # qty_k is already qtyb * u_bsr in your code
+        total_diskon = 0.00
+        dpp = round(harga_satuan * jumlah_barang_jasa, 2)
+        dpp_nilai_lain = round(dpp * 11 / 12, 2)
+        tarif_ppn = 12
+        ppn = round(dpp_nilai_lain * tarif_ppn / 100, 2)
+        tarif_ppnbm = ""
+        ppnbm = ""
+
+        new_row = [
+            baris,
+            barang_jasa,
+            kode_barang_jasa,
+            nama_barang_jasa,
+            nama_satuan_ukur,
+            harga_satuan,
+            jumlah_barang_jasa,
+            total_diskon,
+            dpp,
+            dpp_nilai_lain,
+            tarif_ppn,
+            ppn,
+            tarif_ppnbm,
+            ppnbm
+        ]
+
+        ws.insert_rows(end_row)
+        for col, value in enumerate(new_row, 1):
+            ws.cell(row=end_row, column=col, value=value)
+
+    wb.save(filename)
+
+def save_to_history_faktur(invoice_data):
+    filename = "history-faktur.xlsx"
+    # If file does not exist, create it with headers
+    if not os.path.exists(filename):
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.title = "Sheet1"
+        ws.append([
+            "No. Faktur", "Tanggal Faktur", "Nama Pelanggan", "Nama Barang","Qtk (B) U/Bsr", "Qty(K) U/Kcl", "Harga"
+        ])
+        wb.save(filename)
+
+    wb = openpyxl.load_workbook(filename)
+    ws = wb.active
+
+    tanggal_faktur = datetime.now().strftime("%d/%m/%Y")
+    for item in invoice_data["items"]:
+        ws.append([
+            invoice_data["invoice_no"],
+            tanggal_faktur,
+            invoice_data["nama"],
+            item["nama"],
+            item["qty_b"],
+            item["qty_k"],
+            item["harga"]
+        ])
+    wb.save(filename)
+
+if __name__ == "__main__":
+    main()
